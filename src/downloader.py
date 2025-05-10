@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.parse
@@ -17,7 +18,7 @@ from tqdm import tqdm
 
 
 class ImageDownloader:
-    def __init__(self, folder_name: str):
+    def __init__(self, folder_name: str, verify_ssl: bool = True):
         self.folder_name = Path(folder_name)
         self.attachment_dir_name = "_attachments"
         self.attachments_dir = self.folder_name / self.attachment_dir_name
@@ -28,6 +29,7 @@ class ImageDownloader:
             "Connection": "keep-alive",
         }
         self.timeout = 30
+        self.verify_ssl = verify_ssl
         self.setup_logging()
 
     def setup_logging(self) -> None:
@@ -223,8 +225,18 @@ class ImageDownloader:
                 # Download from URL
                 encode_url = urllib.parse.quote(img_url, safe='/:?=&@') # link may contain other language 
                 req = urllib.request.Request(encode_url, headers=self.headers)
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    content = response.read()
+                
+                # Create a custom SSL context if verify_ssl is False
+                if not self.verify_ssl:
+                    context = ssl.create_default_context()
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    with urllib.request.urlopen(req, timeout=self.timeout, context=context) as response:
+                        content = response.read()
+                else:
+                    # Use default SSL verification
+                    with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                        content = response.read()
 
             # Compress the image
             compressed_content = self.compress_image(content)
@@ -354,13 +366,19 @@ class ImageDownloader:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: markdown-image-downloader <folder_name>")
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage: markdown-image-downloader <folder_name> [--no-verify-ssl]")
         sys.exit(1)
 
     FOLDER_NAME = sys.argv[1]
+    verify_ssl = True
+    
+    # Check if --no-verify-ssl flag is present
+    if len(sys.argv) == 3 and sys.argv[2] == "--no-verify-ssl":
+        verify_ssl = False
+        print("SSL certificate verification disabled")
 
-    downloader = ImageDownloader(FOLDER_NAME)
+    downloader = ImageDownloader(FOLDER_NAME, verify_ssl)
     downloader.run()
 
 

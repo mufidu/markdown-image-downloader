@@ -12,7 +12,7 @@ wheels = [
 
 [[package]]
 name = "markdown-image-downloader"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "pillow" },

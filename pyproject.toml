@@ -1,6 +1,6 @@
 [project]
 name = "markdown-image-downloader"
-version = "0.1.6"
+version = "0.1.7"
 description = "A tool to download and organize images referenced in markdown files"
 authors = [{ name = "mufidu", email = "mufidu@outlook.com" }]
 dependencies = ["pillow>=11.0.0", "tqdm>=4.66.5"]

@@ -174,30 +174,51 @@ class ImageDownloader:
 
     def get_markdown_filename(self, img_url: str) -> str:
         """Extract and sanitize filename from URL or generate one if not present."""
-        # Decode the URL first
-        decoded_url = urllib.parse.unquote(img_url)
+        try:
+            # Decode the URL first
+            decoded_url = urllib.parse.unquote(img_url)
 
-        # Parse the URL and get the path
-        parsed_url = urllib.parse.urlparse(decoded_url)
-        path = parsed_url.path
+            # Parse the URL and get the path
+            parsed_url = urllib.parse.urlparse(decoded_url)
+            path = parsed_url.path
 
-        # Extract filename from path, ignoring query parameters
-        filename = os.path.basename(path.split("?")[0])
+            # Extract filename from path, ignoring query parameters
+            filename = os.path.basename(path.split("?")[0])
 
-        if not filename:
-            # If no filename in URL, use the domain name or 'image'
-            filename = parsed_url.netloc.split(".")[0] or "image"
+            if not filename:
+                # If no filename in URL, use the domain name or 'image'
+                filename = parsed_url.netloc.split(".")[0] or "image"
 
-        # Sanitize the filename
-        base_name, ext = os.path.splitext(filename)
-        if not ext:
-            ext = ".jpg"  # Default extension if none is present
+            # Sanitize the filename
+            base_name, ext = os.path.splitext(filename)
+            if not ext:
+                ext = ".jpg"  # Default extension if none is present
 
-        # Add a random string to the filename to avoid conflicts
-        sanitized_base = base_name + "_" + str(time.time()).replace(".", "")
-        sanitized_ext = self.sanitize_filename(ext)
+            # Limit filename length, keep extension
+            max_length = 100  # Set maximum length
+            if len(base_name) > max_length:
+                base_name = base_name[:max_length]
 
-        return f"{sanitized_base}{sanitized_ext}"
+            # Add timestamp to ensure unique filename
+            timestamp = str(time.time()).replace(".", "")
+            
+            # Process base name and extension separately
+            sanitized_base = self.sanitize_filename(base_name)
+            sanitized_ext = self.sanitize_filename(ext)
+
+            # Ensure final filename doesn't exceed system limits
+            final_filename = f"{sanitized_base}_{timestamp}{sanitized_ext}"
+            if len(final_filename) > 200:  # Leave some margin
+                final_filename = f"img_{timestamp}{sanitized_ext}"
+
+            # Final check to ensure filename is valid
+            final_filename = self.sanitize_filename(final_filename)
+            
+            return final_filename
+        except Exception as e:
+            logging.error(f"Error generating filename: {str(e)}")
+            # If error occurs, return a safe default filename
+            return f"image_{int(time.time())}.jpg"
 
     def download_image(self, img_url: str, file_name: str) -> Tuple[str, str, bool]:
         """Download a single image and return the new local path."""

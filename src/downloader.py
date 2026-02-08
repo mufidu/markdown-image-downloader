@@ -126,14 +126,21 @@ class ImageDownloader:
         try:
             # Open image from bytes
             img = Image.open(io.BytesIO(image_data))
+            img.load()
 
-            # Convert RGBA to RGB if necessary
-            if img.mode == "RGBA":
+            # Handle transparency for various modes
+            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                # Convert to RGBA to ensure we have an alpha channel
+                img = img.convert("RGBA")
+                # Create a white background
                 bg = Image.new("RGB", img.size, (255, 255, 255))
+                # Paste the image using its alpha channel as a mask
                 bg.paste(img, mask=img.split()[3])
                 img = bg
             else:
+                # For all other modes, convert directly to RGB
                 img = img.convert("RGB")
+
             # Initial quality
             quality = 75
             output = io.BytesIO()

@@ -10,3 +10,6 @@ wheels/
 .venv
 
 logs
+
+# PyPI credentials
+.pypirc

@@ -514,13 +514,22 @@ class ImageDownloader:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: markdown-image-downloader <folder_name>")
-        sys.exit(1)
+    import argparse
+    import importlib.metadata
 
-    FOLDER_NAME = sys.argv[1]
+    parser = argparse.ArgumentParser(
+        prog="markdown-image-downloader",
+        description="Download and localize images referenced in markdown files.",
+    )
+    parser.add_argument("folder", help="Folder containing markdown files")
+    parser.add_argument(
+        "-V", "--version",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('markdown-image-downloader')}",
+    )
+    args = parser.parse_args()
 
-    downloader = ImageDownloader(FOLDER_NAME)
+    downloader = ImageDownloader(args.folder)
     downloader.run()
 
 

@@ -11,5 +11,3 @@ wheels/
 
 logs
 
-# PyPI credentials
-.pypirc

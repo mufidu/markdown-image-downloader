@@ -16,6 +16,19 @@ from PIL import Image
 from tqdm import tqdm
 
 
+class TqdmLoggingHandler(logging.Handler):
+    def __init__(self, level=logging.NOTSET):
+        super().__init__(level)
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 class ImageDownloader:
     def __init__(self, folder_name: str):
         self.folder_name = Path(folder_name)
@@ -43,7 +56,7 @@ class ImageDownloader:
             format="%(asctime)s - %(levelname)s - %(message)s",
             handlers=[
                 logging.FileHandler(log_file, mode="w"),  # Overwrite log file each run
-                logging.StreamHandler(),
+                TqdmLoggingHandler(),
             ],
         )
         logging.info(f"Logging to: {log_file}")
@@ -87,16 +100,17 @@ class ImageDownloader:
         pattern = re.compile(r'%[0-9a-fA-F]{2}')
         parts = []
         last_idx = 0
+        safe_chars = '/:?=&@(),;~+-'
         for match in pattern.finditer(url):
             start, end = match.span()
             part_before = url[last_idx:start]
-            quoted_before = urllib.parse.quote(part_before, safe='/:?=&@')
+            quoted_before = urllib.parse.quote(part_before, safe=safe_chars)
             parts.append(quoted_before)
             parts.append(url[start:end])
             last_idx = end
         
         part_after = url[last_idx:]
-        quoted_after = urllib.parse.quote(part_after, safe='/:?=&@')
+        quoted_after = urllib.parse.quote(part_after, safe=safe_chars)
         parts.append(quoted_after)
         return "".join(parts)
 
@@ -287,8 +301,7 @@ class ImageDownloader:
             return output.getvalue()
 
         except Exception as e:
-            logging.error(f"Error compressing image: {str(e)}")
-            return image_data
+            raise ValueError(f"Error reading or compressing image: {str(e)}")
 
     def sanitize_filename(self, filename: str) -> str:
         """Sanitize filename to remove illegal characters."""
@@ -389,7 +402,11 @@ class ImageDownloader:
                         raise urllib_exc
 
             # Compress the image
-            compressed_content = self.compress_image(content)
+            try:
+                compressed_content = self.compress_image(content)
+            except ValueError as e:
+                logging.error(f"Validation failed for {img_url}: {str(e)}")
+                return img_url, "", False
 
             # Use the same filename as in the markdown link, but sanitized
             filename = self.get_markdown_filename(img_url)
@@ -405,7 +422,7 @@ class ImageDownloader:
 
             return img_url, f"_attachments/{filename}", True
 
-        except (HTTPError, URLError) as e:
+        except (HTTPError, URLError, TimeoutError, OSError) as e:
             logging.error(f"Failed to download {img_url} from {file_name}: {str(e)}")
             return img_url, "", False
         except Exception as e:
@@ -414,9 +431,11 @@ class ImageDownloader:
             )
             return img_url, "", False
 
-    def get_all_images(self) -> Dict[Path, List[Tuple[str, str]]]:
-        """Get all images from all markdown files."""
+    def get_all_images(self) -> Tuple[Dict[Path, List[Tuple[str, str]]], int, int]:
+        """Get all images from all markdown files. Returns files_images, total_found, already_downloaded."""
         files_images = {}
+        total_found = 0
+        already_downloaded = 0
         for file_path in self.get_markdown_files():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
@@ -424,30 +443,26 @@ class ImageDownloader:
                 # Find all image references, handling balanced parentheses in URLs
                 images = self.parse_markdown_images(content)
                 if images:
-                    # Filter out images that are already in _attachments
-                    images = [
-                        (alt, url)
-                        for alt, url in images
-                        if not self.is_attachment_path(url)
-                    ]
-                    if (
-                        images
-                    ):  # Only add to files_images if there are images to process
-                        files_images[file_path] = images
+                    total_found += len(images)
+                    filtered = []
+                    for alt, url in images:
+                        if self.is_attachment_path(url):
+                            already_downloaded += 1
+                        else:
+                            filtered.append((alt, url))
+                    if filtered:
+                        files_images[file_path] = filtered
             except Exception as e:
                 logging.error(f"Error reading file {file_path}: {str(e)}")
-        return files_images
+        return files_images, total_found, already_downloaded
 
-    def process_files(self, files_images: Dict[Path, List[Tuple[str, str]]]) -> None:
+    def process_files(self, files_images: Dict[Path, List[Tuple[str, str]]]) -> Tuple[int, int]:
         """Process all files and their images with a single progress bar."""
         total_images = sum(len(images) for images in files_images.values())
+        successful_downloads = 0
+        failed_downloads = 0
         if total_images == 0:
-            logging.info("No new images to process")
-            return
-
-        logging.info(
-            f"Found {total_images} images to process across {len(files_images)} files"
-        )
+            return 0, 0
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             # Create futures for all images
@@ -475,9 +490,12 @@ class ImageDownloader:
                     old_url, new_path, success = future.result()
 
                     if success and old_url != new_path:
+                        successful_downloads += 1
                         if file_path not in replacements:
                             replacements[file_path] = []
                         replacements[file_path].append((old_url, new_path))
+                    elif not success:
+                        failed_downloads += 1
 
                     pbar.update(1)
                     time.sleep(1)  # Small delay between downloads
@@ -496,18 +514,30 @@ class ImageDownloader:
 
                 except Exception as e:
                     logging.error(f"Error updating file {file_path}: {str(e)}")
+                    
+        return successful_downloads, failed_downloads
 
     def run(self) -> None:
         """Main execution method."""
         try:
             self.setup_directories()
-            files_images = self.get_all_images()
+            files_images, total_found, already_downloaded = self.get_all_images()
 
             if not files_images:
-                logging.info("No new images to download")
+                logging.info(f"Summary: {total_found} images found. All already downloaded.")
                 return
+                
+            logging.info(
+                f"Found {total_found} total images. {already_downloaded} already downloaded. {total_found - already_downloaded} new to process."
+            )
 
-            self.process_files(files_images)
+            success, failed = self.process_files(files_images)
+            
+            logging.info(f"--- Summary ---")
+            logging.info(f"Total images found: {total_found}")
+            logging.info(f"Already downloaded: {already_downloaded}")
+            logging.info(f"Successful new downloads: {success}")
+            logging.info(f"Failed new downloads: {failed}")
 
         except Exception as e:
             logging.error(f"Fatal error: {str(e)}")

@@ -48,6 +48,128 @@ class ImageDownloader:
         )
         logging.info(f"Logging to: {log_file}")
 
+    def unwrap_cdn_url(self, url: str) -> str:
+        """Unwrap nested target URL if it's hosted on a known image-fetching CDN proxy."""
+        # Substack CDN
+        if "substackcdn.com/image/fetch/" in url:
+            parts = url.split("substackcdn.com/image/fetch/")
+            if len(parts) > 1:
+                rest = parts[1]
+                rest_unquoted = urllib.parse.unquote(rest)
+                for prefix in ("https://", "http://"):
+                    idx = rest_unquoted.find(prefix)
+                    if idx != -1:
+                        return rest_unquoted[idx:]
+        # Omnivore CDN
+        if "proxy-prod.omnivore-image-cache.app/" in url:
+            parts = url.split("proxy-prod.omnivore-image-cache.app/")
+            if len(parts) > 1:
+                rest = parts[1]
+                rest_unquoted = urllib.parse.unquote(rest)
+                for prefix in ("https://", "http://"):
+                    idx = rest_unquoted.find(prefix)
+                    if idx != -1:
+                        return rest_unquoted[idx:]
+        # Microlink CDN
+        if "i.microlink.io/" in url:
+            parts = url.split("i.microlink.io/")
+            if len(parts) > 1:
+                rest = parts[1]
+                rest_unquoted = urllib.parse.unquote(rest)
+                for prefix in ("https://", "http://"):
+                    idx = rest_unquoted.find(prefix)
+                    if idx != -1:
+                        return rest_unquoted[idx:]
+        return url
+
+    def safe_quote_url(self, url: str) -> str:
+        """Quote a URL without double-encoding existing %xx escape sequences."""
+        pattern = re.compile(r'%[0-9a-fA-F]{2}')
+        parts = []
+        last_idx = 0
+        for match in pattern.finditer(url):
+            start, end = match.span()
+            part_before = url[last_idx:start]
+            quoted_before = urllib.parse.quote(part_before, safe='/:?=&@')
+            parts.append(quoted_before)
+            parts.append(url[start:end])
+            last_idx = end
+        
+        part_after = url[last_idx:]
+        quoted_after = urllib.parse.quote(part_after, safe='/:?=&@')
+        parts.append(quoted_after)
+        return "".join(parts)
+
+    def parse_markdown_images(self, content: str) -> List[Tuple[str, str]]:
+        """Parse markdown image links, handling balanced parentheses in URLs."""
+        images = []
+        i = 0
+        n = len(content)
+        while i < n:
+            if content[i:i+2] == "![":
+                alt_start = i + 2
+                alt_end = -1
+                bracket_balance = 1
+                j = alt_start
+                while j < n:
+                    if content[j] == '\\':
+                        j += 2
+                        continue
+                    elif content[j] == '[':
+                        bracket_balance += 1
+                    elif content[j] == ']':
+                        bracket_balance -= 1
+                        if bracket_balance == 0:
+                            alt_end = j
+                            break
+                    j += 1
+                
+                if alt_end != -1 and alt_end + 1 < n and content[alt_end + 1] == '(':
+                    url_start = alt_end + 2
+                    url_end = -1
+                    paren_balance = 1
+                    k = url_start
+                    while k < n:
+                        if content[k] == '\\':
+                            k += 2
+                            continue
+                        elif content[k] == '(':
+                            paren_balance += 1
+                        elif content[k] == ')':
+                            paren_balance -= 1
+                            if paren_balance == 0:
+                                url_end = k
+                                break
+                        k += 1
+                    
+                    if url_end != -1:
+                        alt_text = content[alt_start:alt_end]
+                        url = content[url_start:url_end]
+                        images.append((alt_text, url))
+                        i = url_end + 1
+                        continue
+                i += 1
+            else:
+                i += 1
+        return images
+
+    def _download_with_urllib(self, url: str) -> bytes:
+        req = urllib.request.Request(url, headers=self.headers)
+        with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            return response.read()
+
+    def _download_with_curl(self, url: str) -> bytes:
+        import subprocess
+        cmd = [
+            "curl",
+            "-sL",
+            "--max-time", str(self.timeout),
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, check=True)
+        return result.stdout
+
+
     def setup_directories(self) -> None:
         """Create necessary directories if they don't exist."""
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
@@ -249,10 +371,22 @@ class ImageDownloader:
                     raise FileNotFoundError(f"Local file not found: {absolute_path}")
             else:
                 # Download from URL
-                encode_url = urllib.parse.quote(img_url, safe='/:?=&@') # link may contain other language 
-                req = urllib.request.Request(encode_url, headers=self.headers)
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    content = response.read()
+                unwrapped_url = self.unwrap_cdn_url(img_url)
+                encode_url = self.safe_quote_url(unwrapped_url)
+                try:
+                    content = self._download_with_urllib(encode_url)
+                except Exception as urllib_exc:
+                    is_404 = isinstance(urllib_exc, HTTPError) and urllib_exc.code == 404
+                    if is_404:
+                        raise urllib_exc
+                    
+                    logging.info(f"urllib failed for {img_url} ({str(urllib_exc)}), trying curl fallback...")
+                    try:
+                        content = self._download_with_curl(encode_url)
+                        if not content:
+                            raise Exception("curl returned empty content")
+                    except Exception as curl_exc:
+                        raise urllib_exc
 
             # Compress the image
             compressed_content = self.compress_image(content)
@@ -287,10 +421,8 @@ class ImageDownloader:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                # Find all image references, including those with escaped brackets and parentheses
-                images = re.findall(
-                    r"!\[((?:[^\]\\]|\\.)*)\]\(((?:[^)\\]|\\.)*)\)", content
-                )
+                # Find all image references, handling balanced parentheses in URLs
+                images = self.parse_markdown_images(content)
                 if images:
                     # Filter out images that are already in _attachments
                     images = [

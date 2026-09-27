@@ -56,7 +56,7 @@ This will:
 - Maintains detailed logging of error operations
 - Sanitizes filenames for cross-platform compatibility
 - Supports for rerunning the script without re-downloading images
-- Correctly handles image URLs containing parentheses (e.g. thumbor `filters:focal(...)`)
+- Correctly handles image URLs containing parentheses (e.g. thumbor `filters:focal(…)`)
 
 ## How It Works
 
@@ -142,7 +142,7 @@ password = pypi-<your-token-here>
 
 **1. Make your code changes.**
 
-**2. Bump the version** in [`pyproject.toml`](./pyproject.toml):
+**2. Bump the version** in [](./pyproject.toml):
 
 ```toml
 [project]
